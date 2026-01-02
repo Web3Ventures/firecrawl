@@ -1,63 +1,146 @@
 version: "3.8"
 
+x-common-logging: &common-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+    compress: "true"
+
 x-common-env: &common-env
   ENV: local
   REDIS_URL: "${REDIS_URL:-redis://redis:6379}"
   REDIS_RATE_LIMIT_URL: "${REDIS_RATE_LIMIT_URL:-redis://redis:6379}"
   PLAYWRIGHT_MICROSERVICE_URL: "${PLAYWRIGHT_MICROSERVICE_URL:-http://playwright-service:3000/scrape}"
   USE_DB_AUTHENTICATION: "${USE_DB_AUTHENTICATION:-false}"
-  TEST_API_KEY: "${TEST_API_KEY:-test-key}"
+  NUM_WORKERS_PER_QUEUE: "${NUM_WORKERS_PER_QUEUE:-8}"
+  CRAWL_CONCURRENT_REQUESTS: "${CRAWL_CONCURRENT_REQUESTS:-10}"
+  MAX_CONCURRENT_JOBS: "${MAX_CONCURRENT_JOBS:-5}"
+  BROWSER_POOL_SIZE: "${BROWSER_POOL_SIZE:-5}"
+  OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+  OPENAI_BASE_URL: "${OPENAI_BASE_URL:-}"
+  MODEL_NAME: "${MODEL_NAME:-}"
+  MODEL_EMBEDDING_NAME: "${MODEL_EMBEDDING_NAME:-}"
+  OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-}"
+  SLACK_WEBHOOK_URL: "${SLACK_WEBHOOK_URL:-}"
+  BULL_AUTH_KEY: "${BULL_AUTH_KEY:-CHANGEME}"
+  TEST_API_KEY: "${TEST_API_KEY:-}"
   LOGGING_LEVEL: "${LOGGING_LEVEL:-info}"
+  PROXY_SERVER: "${PROXY_SERVER:-}"
+  PROXY_USERNAME: "${PROXY_USERNAME:-}"
+  PROXY_PASSWORD: "${PROXY_PASSWORD:-}"
+  SEARXNG_ENDPOINT: "${SEARXNG_ENDPOINT:-}"
+  SEARXNG_ENGINES: "${SEARXNG_ENGINES:-}"
+  SEARXNG_CATEGORIES: "${SEARXNG_CATEGORIES:-}"
+  POSTGRES_USER: "${POSTGRES_USER:-postgres}"
+  POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-postgres}"
+  POSTGRES_DB: "${POSTGRES_DB:-postgres}"
+  POSTGRES_HOST: "${POSTGRES_HOST:-nuq-postgres}"
+  POSTGRES_PORT: "${POSTGRES_PORT:-5432}"
+  RABBITMQ_DEFAULT_USER: "${RABBITMQ_DEFAULT_USER:-firecrawl}"
+  RABBITMQ_DEFAULT_PASS: "${RABBITMQ_DEFAULT_PASS:-firecrawl}"
+  NUQ_RABBITMQ_URL: "amqp://${RABBITMQ_DEFAULT_USER:-firecrawl}:${RABBITMQ_DEFAULT_PASS:-firecrawl}@rabbitmq:5672"
 
 services:
   playwright-service:
     image: "ghcr.io/mendableai/playwright-service:latest"
     environment:
       PORT: 3000
+      PROXY_SERVER: "${PROXY_SERVER:-}"
+      PROXY_USERNAME: "${PROXY_USERNAME:-}"
+      PROXY_PASSWORD: "${PROXY_PASSWORD:-}"
       BLOCK_MEDIA: "${BLOCK_MEDIA:-true}"
-    shm_size: "2gb"
-    cap_add:
-      - SYS_ADMIN
+      MAX_CONCURRENT_PAGES: "${CRAWL_CONCURRENT_REQUESTS:-10}"
     networks:
       - backend
+    cpus: 2.0
+    mem_limit: 4G
+    memswap_limit: 4G
+    logging: *common-logging
+    tmpfs:
+      - /tmp/.cache:noexec,nosuid,size=1g
 
   api:
     image: "ghcr.io/mendableai/firecrawl:latest"
     environment:
       <<: *common-env
-      HOST: 0.0.0.0
+      HOST: "0.0.0.0"
       PORT: "${INTERNAL_PORT:-3002}"
-      FLY_PROCESS_GROUP: app
-    networks:
-      - backend
+      EXTRACT_WORKER_PORT: "${EXTRACT_WORKER_PORT:-3004}"
+      WORKER_PORT: "${WORKER_PORT:-3005}"
+      NUQ_RABBITMQ_URL: "amqp://${RABBITMQ_DEFAULT_USER:-firecrawl}:${RABBITMQ_DEFAULT_PASS:-firecrawl}@rabbitmq:5672"
     depends_on:
-      - redis
-      - playwright-service
+      redis:
+        condition: service_started
+      playwright-service:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+      nuq-postgres:
+        condition: service_started
     ports:
       - "${PORT:-3002}:${INTERNAL_PORT:-3002}"
-    command: ["node", "dist/index.js"]
-
-  worker:
-    image: "ghcr.io/mendableai/firecrawl:latest"
-    environment:
-      <<: *common-env
-      FLY_PROCESS_GROUP: worker
-      MODEL_NAME: "${MODEL_NAME:-gpt-3.5-turbo}"
+    command: ["node", "dist/src/harness.js", "--start-docker"]
     networks:
       - backend
-    depends_on:
-      - redis
-      - playwright-service
-      - api
-    command: ["node", "dist/workers/index.js"]
+    cpus: 4.0
+    mem_limit: 8G
+    memswap_limit: 8G
+    logging: *common-logging
 
   redis:
     image: "redis:alpine"
     networks:
       - backend
     command: "redis-server --bind 0.0.0.0"
-    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+        compress: "true"
+    volumes:
+      - redis-data:/data
+
+  rabbitmq:
+    image: "rabbitmq:3-management"
+    environment:
+      RABBITMQ_DEFAULT_USER: "${RABBITMQ_DEFAULT_USER:-firecrawl}"
+      RABBITMQ_DEFAULT_PASS: "${RABBITMQ_DEFAULT_PASS:-firecrawl}"
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+        compress: "true"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+
+  nuq-postgres:
+    build: apps/nuq-postgres
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-postgres}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-postgres}"
+      POSTGRES_DB: "${POSTGRES_DB:-postgres}"
+    networks:
+      - backend
+    logging: *common-logging
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
 
 networks:
   backend:
     driver: bridge
+
+volumes:
+  redis-data:
+  rabbitmq-data:
+  postgres-data:
