@@ -19,8 +19,9 @@ import { ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
 
 //! Hardcoded values (not recommended for production)
 //! Highly recommended to move all Firecrawl API calls to the backend (e.g. Next.js API route)
-const FIRECRAWL_API_URL = "http://localhost:3002"; // Local Firecrawl API
-const FIRECRAWL_API_KEY = "fc-local-dev"; // Placeholder for local dev (auth disabled)
+const FIRECRAWL_API_URL =
+  import.meta.env.VITE_FIRECRAWL_API_URL ?? "http://localhost:3002";
+const FIRECRAWL_API_KEY = import.meta.env.VITE_FIRECRAWL_API_KEY ?? "";
 
 interface FormData {
   url: string;
@@ -170,12 +171,16 @@ export default function FirecrawlComponent() {
             },
           };
 
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (FIRECRAWL_API_KEY) {
+        headers.Authorization = `Bearer ${FIRECRAWL_API_KEY}`;
+      }
+
       const response = await fetch(endpoint, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${FIRECRAWL_API_KEY}`,
-          "Content-Type": "application/json",
-        },
+        headers,
         body: JSON.stringify(requestBody),
       });
 

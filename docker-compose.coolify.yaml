@@ -60,6 +60,21 @@ services:
     tmpfs:
       - /tmp/.cache:noexec,nosuid,size=1g
 
+  ui:
+    build:
+      context: apps/ui/ingestion-ui
+      dockerfile: Dockerfile
+      args:
+        VITE_FIRECRAWL_API_URL: "${UI_FIRECRAWL_API_URL:-http://localhost:3002}"
+        VITE_FIRECRAWL_API_KEY: "${UI_FIRECRAWL_API_KEY:-}"
+    depends_on:
+      - api
+    ports:
+      - "${UI_PORT:-8080}:80"
+    networks:
+      - backend
+    logging: *common-logging
+
   api:
     image: "ghcr.io/firecrawl/firecrawl:latest"
     environment:
